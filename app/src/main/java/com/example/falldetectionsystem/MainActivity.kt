@@ -17,12 +17,46 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import kotlin.math.sqrt
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            FallDetectionScreen(context = this)
+            var currentScreen by remember { mutableStateOf("LAB1") }
+
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Панель навігації
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(8.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    Button(
+                        onClick = { currentScreen = "LAB1" },
+                        enabled = currentScreen != "LAB1"
+                    ) {
+                        Text("Сенсор")
+                    }
+                    Button(
+                        onClick = { currentScreen = "LAB2" },
+                        enabled = currentScreen != "LAB2"
+                    ) {
+                        Text("(BLE)")
+                    }
+                }
+
+                HorizontalDivider()
+
+                // Відображення екранів
+                Box(modifier = Modifier.weight(1f)) {
+                    when (currentScreen) {
+                        "LAB1" -> FallDetectionScreen(context = this@MainActivity)
+                        "LAB2" -> BleEmulatorScreen()
+                    }
+                }
+            }
         }
     }
 }
@@ -92,5 +126,81 @@ fun FallDetectionScreen(context: Context) {
             color = indicatorColor,
             style = MaterialTheme.typography.titleLarge
         )
+    }
+}
+@Composable
+fun BleEmulatorScreen() {
+    val bleService = remember { MockBleService() }
+    val connectionState by bleService.connectionState.collectAsState()
+    val foundDevices by bleService.foundDevices.collectAsState()
+    val logs by bleService.terminalLogs.collectAsState()
+    val coroutineScope = rememberCoroutineScope()
+
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Text("Статус: ${connectionState.name}", style = MaterialTheme.typography.titleMedium)
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                onClick = { coroutineScope.launch { bleService.startScan() } },
+                enabled = connectionState == BleState.DISCONNECTED
+            ) {
+                Text("Пошук пристроїв")
+            }
+            if (connectionState == BleState.SCANNING) {
+                Spacer(modifier = Modifier.width(16.dp))
+                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Список пристроїв
+        Text("Знайдені пристрої:", style = MaterialTheme.typography.labelLarge)
+        foundDevices.forEach { device ->
+            Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                Row(
+                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(device.name, style = MaterialTheme.typography.bodyLarge)
+                        Text(device.address, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Button(
+                        onClick = {
+                            if (connectionState == BleState.CONNECTED) bleService.disconnect()
+                            else bleService.connect(device)
+                        }
+                    ) {
+                        Text(if (connectionState == BleState.CONNECTED) "Disconnect" else "Connect")
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(
+            onClick = { bleService.sendData("FALL_DETECTED_CMD") },
+            enabled = connectionState == BleState.CONNECTED
+        ) {
+            Text("Симлювати відправку даних (Tx)")
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Термінал
+        Text("Термінал:", style = MaterialTheme.typography.labelLarge)
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            reverseLayout = true
+        ) {
+            items(logs.reversed()) { logMsg ->
+                Text(logMsg, style = MaterialTheme.typography.bodySmall)
+            }
+        }
     }
 }
