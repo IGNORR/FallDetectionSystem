@@ -20,10 +20,14 @@ import kotlin.math.sqrt
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import kotlinx.coroutines.launch
+import com.google.firebase.FirebaseApp
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        FirebaseApp.initializeApp(this)
+
         setContent {
             var currentScreen by remember { mutableStateOf("LAB1") }
 
@@ -63,38 +67,49 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun FallDetectionScreen(context: Context) {
-    // Стейт для координат та статусу
     var x by remember { mutableFloatStateOf(0f) }
     var y by remember { mutableFloatStateOf(0f) }
     var z by remember { mutableFloatStateOf(0f) }
     var isFalling by remember { mutableStateOf(false) }
 
-    // Життєвий цикл: підписка та відписка від сенсора
+    // Стан хмарної синхронізації
+    var syncStatus by remember { mutableStateOf("Очікування...") }
+    var isSyncSuccess by remember { mutableStateOf(false) }
+
+    val cloudRepository = remember { CloudRepository() }
+
+    // Зчитування даних з акселерометра
     DisposableEffect(Unit) {
         val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-
         val listener = object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent) {
                 x = event.values[0]
                 y = event.values[1]
                 z = event.values[2]
-
-                // Обчислення загального вектора прискорення
-                val acceleration = sqrt((x * x + y * y + z * z).toDouble())
-
-                // Threshold: Стан невагомості або різкий удар
+                val acceleration = kotlin.math.sqrt((x * x + y * y + z * z).toDouble())
                 isFalling = acceleration !in 3.0..20.0
             }
-
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
         }
-
         sensorManager.registerListener(listener, accelerometer, SensorManager.SENSOR_DELAY_UI)
+        onDispose { sensorManager.unregisterListener(listener) }
+    }
 
-        // Викликається при onPause/onStop (захист від втрати ресурсів)
-        onDispose {
-            sensorManager.unregisterListener(listener)
+    // Фоновий цикл відправки даних у Firebase
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(5000)
+            syncStatus = "Відправка..."
+            val payload = SensorPayload(
+                sensorType = "Accelerometer",
+                x = x,
+                y = y,
+                z = z
+            )
+            val success = cloudRepository.sendData(payload)
+            isSyncSuccess = success
+            syncStatus = if (success) "Успішно" else "Помилка мережі"
         }
     }
 
@@ -112,14 +127,25 @@ fun FallDetectionScreen(context: Context) {
         Text(text = "Y: ${"%.2f".format(y)}")
         Text(text = "Z: ${"%.2f".format(z)}")
 
-        Spacer(modifier = Modifier.height(48.dp))
+        Spacer(modifier = Modifier.height(32.dp))
 
-        // Графічний індикатор
+        // Блок індикації синхронізації
+        Card(modifier = Modifier.padding(8.dp)) {
+            Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Хмарна синхронізація: $syncStatus", style = MaterialTheme.typography.bodyLarge)
+                Spacer(modifier = Modifier.width(8.dp))
+                Canvas(modifier = Modifier.size(16.dp)) {
+                    drawCircle(color = if (isSyncSuccess) Color.Green else if (syncStatus == "Помилка мережі") Color.Red else Color.Gray)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+
         val indicatorColor = if (isFalling) Color.Red else Color.Green
         Canvas(modifier = Modifier.size(120.dp)) {
             drawCircle(color = indicatorColor)
         }
-
         Spacer(modifier = Modifier.height(16.dp))
         Text(
             text = if (isFalling) "УВАГА: ПАДІННЯ!" else "Стан стабільний",
