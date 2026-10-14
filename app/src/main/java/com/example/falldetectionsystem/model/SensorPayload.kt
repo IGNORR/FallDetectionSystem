@@ -1,4 +1,4 @@
-package com.example.falldetectionsystem
+package com.example.falldetectionsystem.model
 
 import java.text.SimpleDateFormat
 import java.util.Date

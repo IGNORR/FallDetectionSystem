@@ -1,5 +1,6 @@
-package com.example.falldetectionsystem
+package com.example.falldetectionsystem.repository
 
+import com.example.falldetectionsystem.model.SensorPayload
 import com.google.firebase.database.FirebaseDatabase
 import kotlinx.coroutines.tasks.await
 
@@ -8,8 +9,8 @@ class CloudRepository {
 
     suspend fun sendData(payload: SensorPayload): Boolean {
         return try {
-            val newRef = database.push() // Генерує унікальний ID для запису
-            newRef.setValue(payload).await() // Асинхронна відправка даних
+            val newRef = database.push()
+            newRef.setValue(payload).await()
             true
         } catch (e: Exception) {
             e.printStackTrace()
