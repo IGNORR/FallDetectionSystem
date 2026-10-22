@@ -9,6 +9,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import com.example.falldetectionsystem.model.ActivityClassifier
 import com.example.falldetectionsystem.repository.AppDatabase
 import com.example.falldetectionsystem.ui.AnalyticsScreen
 import com.example.falldetectionsystem.ui.BleEmulatorScreen
@@ -23,7 +26,16 @@ class MainActivity : ComponentActivity() {
         FirebaseApp.initializeApp(this)
 
         val database = AppDatabase.getDatabase(this)
-        val fallViewModel = FallDetectionViewModel(sensorDao = database.sensorDao())
+        val fallViewModel = ViewModelProvider(this, object : ViewModelProvider.Factory {
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                require(modelClass == FallDetectionViewModel::class.java)
+                @Suppress("UNCHECKED_CAST")
+                return FallDetectionViewModel(
+                    sensorDao = database.sensorDao(),
+                    classifier = ActivityClassifier(applicationContext)
+                ) as T
+            }
+        })[FallDetectionViewModel::class.java]
 
         WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = true
 

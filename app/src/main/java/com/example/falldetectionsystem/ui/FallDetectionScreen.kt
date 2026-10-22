@@ -16,6 +16,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.falldetectionsystem.repository.SmartActuator
 import com.example.falldetectionsystem.viewmodel.FallDetectionViewModel
 
@@ -23,11 +26,14 @@ import com.example.falldetectionsystem.viewmodel.FallDetectionViewModel
 fun FallDetectionScreen(viewModel: FallDetectionViewModel) {
     val context = LocalContext.current
     val smartActuator = remember { SmartActuator(context) }
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     val x by viewModel.x.collectAsState()
     val y by viewModel.y.collectAsState()
     val z by viewModel.z.collectAsState()
     val isFalling by viewModel.isFalling.collectAsState()
+    val isThresholdAlarm by viewModel.isThresholdAlarm.collectAsState()
+    val aiInsight by viewModel.aiInsight.collectAsState()
     val syncStatus by viewModel.syncStatus.collectAsState()
     val isSyncSuccess by viewModel.isSyncSuccess.collectAsState()
 
@@ -40,20 +46,20 @@ fun FallDetectionScreen(viewModel: FallDetectionViewModel) {
         smartActuator.toggleFlashlight(isFlashlightActive)
     }
 
-    // Автоматична вібрація при фіксації падіння
+    // Автоматична вібрація лише від порогового детектора падіння.
     LaunchedEffect(isFalling) {
         if (isFalling) {
             smartActuator.triggerAlarm()
         }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(lifecycleOwner) {
         val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
         val listener = object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent) {
-                viewModel.updateSensorData(event.values[0], event.values[1], event.values[2])
+                viewModel.updateSensorData(event.values[0], event.values[1], event.values[2], event.timestamp)
             }
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
         }
@@ -65,9 +71,29 @@ fun FallDetectionScreen(viewModel: FallDetectionViewModel) {
             }
         }
 
-        sensorManager.registerListener(listener, accelerometer, SensorManager.SENSOR_DELAY_UI)
+        var registered = false
+        fun startSensor() {
+            if (!registered && accelerometer != null) {
+                registered = sensorManager.registerListener(listener, accelerometer, 10_000)
+            }
+        }
+        fun stopSensor() {
+            if (registered) sensorManager.unregisterListener(listener)
+            registered = false
+            viewModel.stopSensorStream()
+        }
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> startSensor()
+                Lifecycle.Event.ON_STOP -> stopSensor()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) startSensor()
         onDispose {
-            sensorManager.unregisterListener(listener)
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            stopSensor()
             smartActuator.unregisterTorchCallback(torchCallback)
             smartActuator.toggleFlashlight(false)
         }
@@ -85,6 +111,20 @@ fun FallDetectionScreen(viewModel: FallDetectionViewModel) {
 
         Text(text = "Осі акселерометра:")
         Text(text = "X: ${"%.2f".format(x)} | Y: ${"%.2f".format(y)} | Z: ${"%.2f".format(z)}")
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("AI Insights", style = MaterialTheme.typography.titleMedium)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = if (aiInsight.samplesCollected < viewModel.aiWindowSize) {
+                        "${aiInsight.status}: ${aiInsight.samplesCollected}/${viewModel.aiWindowSize} вимірювань"
+                    } else aiInsight.status,
+                    color = if (aiInsight.isFallHint) Color.Red else MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -129,7 +169,10 @@ fun FallDetectionScreen(viewModel: FallDetectionViewModel) {
         }
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = if (isFalling) "УВАГА: ПАДІННЯ! (Актуатори ON)" else "Стан стабільний",
+            text = when {
+                isThresholdAlarm -> "ПОРОГОВА ТРИВОГА! (Актуатори ON)"
+                else -> "Стан стабільний"
+            },
             color = indicatorColor,
             style = MaterialTheme.typography.titleMedium
         )

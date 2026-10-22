@@ -2,12 +2,18 @@ package com.example.falldetectionsystem.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.falldetectionsystem.model.ActivityClassifier
+import com.example.falldetectionsystem.model.AiInsight
 import com.example.falldetectionsystem.model.DecisionEngine
+import com.example.falldetectionsystem.model.FallMotionGate
 import com.example.falldetectionsystem.model.SensorPayload
 import com.example.falldetectionsystem.model.SensorRecord
+import com.example.falldetectionsystem.model.SensorWindow
 import com.example.falldetectionsystem.repository.CloudRepository
 import com.example.falldetectionsystem.repository.SensorDao
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -15,10 +21,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 class FallDetectionViewModel(
     private val sensorDao: SensorDao,
+    private val classifier: ActivityClassifier,
     private val repository: CloudRepository = CloudRepository(),
     private val decisionEngine: DecisionEngine = DecisionEngine()
 ) : ViewModel() {
@@ -34,6 +42,19 @@ class FallDetectionViewModel(
 
     private val _isFalling = MutableStateFlow(false)
     val isFalling: StateFlow<Boolean> = _isFalling
+
+    private val _isThresholdAlarm = MutableStateFlow(false)
+    val isThresholdAlarm: StateFlow<Boolean> = _isThresholdAlarm
+
+    private val _aiInsight = MutableStateFlow(AiInsight())
+    val aiInsight: StateFlow<AiInsight> = _aiInsight
+    val aiWindowSize: Int = ActivityClassifier.WINDOW_SIZE
+
+    private val sensorWindow = SensorWindow(ActivityClassifier.WINDOW_SIZE)
+    private var lastSensorTimeNs = 0L
+    private var samplesSinceInference = 0
+    private var inferenceJob: Job? = null
+    private var stopCloudCommandListener: (() -> Unit)? = null
 
     private val _syncStatus = MutableStateFlow("Очікування...")
     val syncStatus: StateFlow<String> = _syncStatus
@@ -64,17 +85,94 @@ class FallDetectionViewModel(
         listenToCloudCommands()
     }
 
-    fun updateSensorData(newX: Float, newY: Float, newZ: Float) {
+    fun updateSensorData(newX: Float, newY: Float, newZ: Float, sensorTimeNs: Long) {
         _x.value = newX
         _y.value = newY
         _z.value = newZ
 
         val currentAcc = decisionEngine.calculateAcceleration(newX, newY, newZ).toFloat()
-        val falling = decisionEngine.shouldActivateActuator(newX, newY, newZ)
+        _isThresholdAlarm.value = decisionEngine.shouldActivateActuator(newX, newY, newZ)
+        val falling = _isThresholdAlarm.value
         _isFalling.value = falling
         updateActuatorState()
 
         saveToDatabaseIfNeeded(currentAcc, falling)
+        acceptAiSample(newX, newY, newZ, sensorTimeNs)
+    }
+
+    private fun acceptAiSample(x: Float, y: Float, z: Float, timeNs: Long) {
+        if (lastSensorTimeNs != 0L) {
+            val elapsed = timeNs - lastSensorTimeNs
+            if (elapsed < 18_000_000L) return
+            if (elapsed > 250_000_000L) {
+                sensorWindow.clear()
+                samplesSinceInference = 0
+                _aiInsight.value = AiInsight()
+            }
+        }
+        lastSensorTimeNs = timeNs
+        sensorWindow.add(x, y, z)
+        samplesSinceInference++
+        if (sensorWindow.size < ActivityClassifier.WINDOW_SIZE) {
+            _aiInsight.value = AiInsight(samplesCollected = sensorWindow.size)
+            return
+        }
+        if (samplesSinceInference < 25 || inferenceJob?.isActive == true) return
+        samplesSinceInference = 0
+        val window = sensorWindow.snapshot() ?: return
+        if (FallMotionGate.isStationary(window)) {
+            _aiInsight.value = AiInsight(
+                status = "Немає руху",
+                samplesCollected = ActivityClassifier.WINDOW_SIZE
+            )
+            return
+        }
+        val hasImpact = FallMotionGate.hasImpact(window)
+        _aiInsight.value = _aiInsight.value.copy(status = "Аналіз руху")
+        inferenceJob = viewModelScope.launch(Dispatchers.Default) {
+            try {
+                val probabilities = classifier.classify(window)
+                withContext(Dispatchers.Main) {
+                    val predictedIndex = probabilities.indices.maxByOrNull { probabilities[it] } ?: return@withContext
+                    val fallProbability = probabilities[classifier.fallClassIndex]
+                    val fallCandidate = hasImpact &&
+                        predictedIndex == classifier.fallClassIndex &&
+                        fallProbability >= classifier.fallThreshold
+                    _aiInsight.value = AiInsight(
+                        status = when {
+                            fallCandidate -> "Можливе падіння"
+                            predictedIndex == classifier.fallClassIndex && !hasImpact ->
+                                "Схоже на падіння, але удару немає"
+                            predictedIndex == classifier.fallClassIndex -> "Інший рух"
+                            else -> classifier.classNames[predictedIndex]
+                        },
+                        probabilities = probabilities.toList(),
+                        samplesCollected = ActivityClassifier.WINDOW_SIZE,
+                        isFallHint = fallCandidate
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                withContext(Dispatchers.Main) {
+                    _aiInsight.value = AiInsight(
+                        status = "Помилка моделі: ${error.message}",
+                        samplesCollected = ActivityClassifier.WINDOW_SIZE
+                    )
+                }
+            }
+        }
+    }
+
+    fun stopSensorStream() {
+        lastSensorTimeNs = 0L
+        sensorWindow.clear()
+        samplesSinceInference = 0
+        inferenceJob?.cancel()
+        _aiInsight.value = AiInsight()
+        _isThresholdAlarm.value = false
+        _isFalling.value = false
+        updateActuatorState()
     }
 
     private fun saveToDatabaseIfNeeded(currentAcc: Float, isFallingNow: Boolean) {
@@ -105,7 +203,7 @@ class FallDetectionViewModel(
     }
 
     private fun listenToCloudCommands() {
-        repository.observeRemoteCommand { status ->
+        stopCloudCommandListener = repository.observeRemoteCommand { status ->
             _remoteLedStatus.value = status
             updateActuatorState()
         }
@@ -131,5 +229,12 @@ class FallDetectionViewModel(
                 _syncStatus.value = if (success) "Успішно" else "Помилка мережі"
             }
         }
+    }
+
+    override fun onCleared() {
+        stopCloudCommandListener?.invoke()
+        inferenceJob?.cancel()
+        classifier.close()
+        super.onCleared()
     }
 }

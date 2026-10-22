@@ -27,6 +27,9 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 
 @Composable
 fun AnalyticsScreen(viewModel: FallDetectionViewModel) {
@@ -34,19 +37,40 @@ fun AnalyticsScreen(viewModel: FallDetectionViewModel) {
     val timeFormatter = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
 
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
-    DisposableEffect(Unit) {
+    DisposableEffect(lifecycleOwner) {
         val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         val listener = object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent) {
-                viewModel.updateSensorData(event.values[0], event.values[1], event.values[2])
+                viewModel.updateSensorData(event.values[0], event.values[1], event.values[2], event.timestamp)
             }
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
         }
-        sensorManager.registerListener(listener, accelerometer, SensorManager.SENSOR_DELAY_UI)
+        var registered = false
+        fun startSensor() {
+            if (!registered && accelerometer != null) {
+                registered = sensorManager.registerListener(listener, accelerometer, 10_000)
+            }
+        }
+        fun stopSensor() {
+            if (registered) sensorManager.unregisterListener(listener)
+            registered = false
+            viewModel.stopSensorStream()
+        }
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> startSensor()
+                Lifecycle.Event.ON_STOP -> stopSensor()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) startSensor()
         onDispose {
-            sensorManager.unregisterListener(listener)
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            stopSensor()
         }
     }
 

@@ -24,7 +24,7 @@ class CloudRepository {
     }
 
     // Слухач команд із хмари (Л.Р. №4)
-    fun observeRemoteCommand(onCommandReceived: (Boolean) -> Unit) {
+    fun observeRemoteCommand(onCommandReceived: (Boolean) -> Unit): () -> Unit {
         // Створимо початкове значення false, якщо гілки ще немає в консолі
         controlRef.get().addOnSuccessListener { snapshot ->
             if (!snapshot.exists()) {
@@ -32,14 +32,16 @@ class CloudRepository {
             }
         }
 
-        controlRef.addValueEventListener(object : ValueEventListener {
+        val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val status = snapshot.getValue(Boolean::class.java) ?: false
                 onCommandReceived(status)
             }
 
             override fun onCancelled(error: DatabaseError) {}
-        })
+        }
+        controlRef.addValueEventListener(listener)
+        return { controlRef.removeEventListener(listener) }
     }
 
     fun setRemoteCommand(status: Boolean) {
