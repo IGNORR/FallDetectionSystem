@@ -1,0 +1,31 @@
+{
+  "dataset": "UniMiB SHAR (Kaggle: alirezacman/unimib-shar)",
+  "class_names": [
+    "Ходьба",
+    "Біг",
+    "Інший рух",
+    "Падіння"
+  ],
+  "input_shape": [
+    1,
+    151,
+    1
+  ],
+  "input_signal": "sqrt(acc_x^2 + acc_y^2 + acc_z^2)",
+  "input_unit": "m/s^2",
+  "sampling_hz": 50,
+  "normalization": "(magnitude - mean) / std",
+  "mean": 10.011740684509277,
+  "std": 4.258579254150391,
+  "fall_class_index": 3,
+  "fall_threshold": 0.5499999999999999,
+  "stationary_state": "separate accelerometer rule in Android; not a model class",
+  "test_subjects": [
+    9,
+    10,
+    16,
+    18,
+    24,
+    28
+  ]
+}
